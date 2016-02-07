@@ -82,13 +82,13 @@ func generateKey() (uuidHex string) {
 func (b *Broker) queueNameExists(queueName string) bool {
 	exists := false
 	b.RLock()
+	defer b.RUnlock()
 	for _, queue := range b.queues {
 		if queue.Name == queueName {
 			exists = true
 			break
 		}
 	}
-	b.RUnlock()
 	return exists
 }
 
@@ -163,7 +163,7 @@ func (b *Broker) GetConsumers(queueId string) ([]Consumer, error) {
 
 func (b *Broker) AddConsumer(queueId, callbackUrl string) (string, error) {
 	b.RLock()
-	defer b.RLock()
+	defer b.RUnlock()
 	if queue, ok := b.queues[queueId]; ok {
 		return queue.AddConsumer(callbackUrl)
 	} else {
