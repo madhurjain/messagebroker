@@ -116,7 +116,7 @@ func main() {
 
 	router.GET("/queues/:id/consumers", getConsumers)
 	router.POST("/queues/:id/consumers", addConsumer)
-	router.POST("/queues/:id/consumers/:consumer_id", removeConsumer)
+	router.DELETE("/queues/:id/consumers/:consumer_id", removeConsumer)
 
 	log.Println("Starting Broker on 8080")
 
