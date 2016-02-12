@@ -6,35 +6,14 @@ import (
 	"fmt"
 	"github.com/satori/go.uuid"
 	"log"
-	"net/http"
-	"net/url"
 	"strconv"
 	"sync"
 	"time"
 )
 
-type Consumer struct {
-	Id          string `json:"id"`
-	QueueId     string `json:"queue_id"`
-	CallbackUrl string `json:"callback_url"`
-}
-
-type Queue struct {
-	Id        string `json:"id"`
-	Name      string `json:"name"`
-	consumers map[string]*url.URL
-	sync.RWMutex
-}
-
 type Broker struct {
 	queues map[string]*Queue
 	sync.RWMutex
-}
-
-type Message struct {
-	id        string
-	timestamp string
-	body      string
 }
 
 func NewBroker() *Broker {
@@ -42,26 +21,23 @@ func NewBroker() *Broker {
 }
 
 func (b *Broker) Broadcast(queueId, body string) error {
-	log.Println(" -- broadcast message", queueId, body)
+	log.Println(" --> broadcast message", queueId, body)
 	// check if body is not blank
 	if body == "" {
 		return errors.New("Please specify a message to be sent")
 	}
+
 	b.RLock()
 	queue, ok := b.queues[queueId]
 	b.RUnlock()
+
+	message := &Message{id: generateKey(), timestamp: strconv.FormatInt(time.Now().Unix(), 10), body: body}
 	if ok {
+		// send message to all consumers within the queue
 		queue.RLock()
-		message := &Message{id: generateKey(), timestamp: strconv.FormatInt(time.Now().Unix(), 10), body: body}
-		for _, callback := range queue.consumers {
-			log.Println("Message: ", message, " To: ", callback.String())
-			// POST message to consumers
-			go func(msg *Message, to string) {
-				_, err := http.PostForm(to, url.Values{"id": {msg.id}, "timestamp": {msg.timestamp}, "body": {msg.body}})
-				if err != nil {
-					log.Println("Error sending request to client", err.Error())
-				}
-			}(message, callback.String())
+		for _, consumer := range queue.consumers {
+			job := &Job{consumer: consumer, message: message}
+			queue.job <- job
 		}
 		queue.RUnlock()
 	} else {
@@ -111,12 +87,12 @@ func (b *Broker) AddQueue(queueName string) (string, error) {
 	if b.queueNameExists(queueName) {
 		return "", fmt.Errorf("Queue with name %s already exists", queueName)
 	}
-	queueId := generateKey()
-	log.Println("-- adding queue", queueId)
+	queue := NewQueue(queueName)
+	log.Println("-- adding queue", queue.Id)
 	b.Lock()
-	b.queues[queueId] = &Queue{Id: queueId, Name: queueName, consumers: make(map[string]*url.URL)}
+	b.queues[queue.Id] = queue
 	b.Unlock()
-	return queueId, nil
+	return queue.Id, nil
 }
 
 func (b *Broker) EditQueue(queueId string, queueName string) error {
@@ -134,7 +110,7 @@ func (b *Broker) EditQueue(queueId string, queueName string) error {
 	if queue, ok := b.queues[queueId]; ok {
 		queue.Name = queueName
 	} else {
-		return fmt.Errorf("Queue (Id %s) does not exist", queueId)
+		return fmt.Errorf("Queue (%s) does not exist", queueId)
 	}
 	return nil
 }
@@ -144,20 +120,22 @@ func (b *Broker) DeleteQueue(queueId string) error {
 	b.Lock()
 	defer b.Unlock()
 	if _, ok := b.queues[queueId]; ok {
+		b.queues[queueId].close()
 		delete(b.queues, queueId)
 	} else {
-		return fmt.Errorf("Queue (Id %s) does not exist", queueId)
+		return fmt.Errorf("Queue (%s) does not exist", queueId)
 	}
 	return nil
 }
 
+/* Consumer */
 func (b *Broker) GetConsumers(queueId string) ([]Consumer, error) {
 	b.RLock()
-	defer b.RLock()
+	defer b.RUnlock()
 	if queue, ok := b.queues[queueId]; ok {
 		return queue.GetConsumers(), nil
 	} else {
-		return nil, fmt.Errorf("Queue (Id %s) does not exist", queueId)
+		return nil, fmt.Errorf("Queue (%s) does not exist", queueId)
 	}
 }
 
@@ -167,51 +145,16 @@ func (b *Broker) AddConsumer(queueId, callbackUrl string) (string, error) {
 	if queue, ok := b.queues[queueId]; ok {
 		return queue.AddConsumer(callbackUrl)
 	} else {
-		return "", fmt.Errorf("Queue (Id %s) does not exist", queueId)
+		return "", fmt.Errorf("Queue (%s) does not exist", queueId)
 	}
 }
 
 func (b *Broker) RemoveConsumer(queueId, consumerId string) error {
 	b.RLock()
-	defer b.RLock()
+	defer b.RUnlock()
 	if queue, ok := b.queues[queueId]; ok {
 		return queue.RemoveConsumer(consumerId)
 	} else {
-		return fmt.Errorf("Queue (Id %s) does not exist", queueId)
+		return fmt.Errorf("Queue (%s) does not exist", queueId)
 	}
-}
-
-/* Consumer */
-func (q *Queue) GetConsumers() []Consumer {
-	q.RLock()
-	var consumers []Consumer
-	for id, url := range q.consumers {
-		consumers = append(consumers, Consumer{Id: id, QueueId: q.Id, CallbackUrl: url.String()})
-	}
-	q.RUnlock()
-	return consumers
-}
-
-func (q *Queue) AddConsumer(callbackUrl string) (string, error) {
-	u, err := url.Parse(callbackUrl)
-	if err != nil {
-		return "", err
-	}
-	consumerId := generateKey()
-	q.Lock()
-	log.Println("-- adding consumer with callback", callbackUrl)
-	q.consumers[consumerId] = u
-	q.Unlock()
-	return consumerId, nil
-}
-
-func (q *Queue) RemoveConsumer(id string) error {
-	q.Lock()
-	defer q.Unlock()
-	if _, ok := q.consumers[id]; ok {
-		delete(q.consumers, id)
-	} else {
-		return fmt.Errorf("Consumer (id %s) Not Found", id)
-	}
-	return nil
 }
